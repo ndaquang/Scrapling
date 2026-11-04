@@ -3,3 +3,4 @@ output/
 *.seen.json
 __pycache__/
 .scrapling_cache/
+profiles/

@@ -31,6 +31,10 @@ python universal_crawler.py discover https://www.chotot.com/mua-ban-bat-dong-san
 
 # 5) Crawl cả website thành Markdown (cho ChatGPT/Claude/RAG)
 python universal_crawler.py markdown https://docs.example.com/ --max-pages 100
+
+# 6) Trang cần đăng nhập (Facebook…): tự đăng nhập một lần, phiên được lưu vào thư mục profile
+python universal_crawler.py login https://www.facebook.com/ --profile profiles/facebook
+python universal_crawler.py run presets/facebook_marketplace.yaml --max-items 200
 ```
 
 Tuỳ chọn thêm cho lệnh `run`:
@@ -60,6 +64,9 @@ Tuỳ chọn thêm cho lệnh `run`:
 | Selector tự thích nghi khi web đổi giao diện | `css(..., adaptive=True, auto_save=True)` | `fetch.adaptive: true` + `adaptive: true` ở từng trường |
 | Tự tìm danh sách từ 1 mẫu | `find_by_text` + `find_similar` + `generate_css_selector` | lệnh `similar` |
 | Bắt API JSON ẩn | `record_requests=True` + `session.network.search()` | lệnh `discover` |
+| Cuộn vô hạn / bấm "Xem thêm" | `page_action` (async) | `fetch.scroll: {times, pause_ms, click_css}` |
+| Giữ phiên đăng nhập | `user_data_dir` | `fetch.user_data_dir` + lệnh `login` |
+| Lấy dữ liệu từ API mà trang tự gọi | `record_requests` + `network.search()` | `source: network` + `network_pattern` |
 | Markdown sạch cho AI | `response.markdown()` | `markdown: true` hoặc lệnh `markdown` |
 | Xuất dữ liệu | `to_json/to_csv/to_xml` | `output.formats: [json, jsonl, csv, xlsx, xml]` |
 
@@ -72,6 +79,10 @@ Phần bổ sung riêng của bản này:
   phù hợp để chạy theo lịch hằng ngày.
 * **Ghi file trực tiếp** `*.live.jsonl` trong lúc crawl, nên dừng giữa chừng vẫn còn dữ liệu.
 * **Tự trích xuất khi không khai báo trường**: lấy JSON-LD, OpenGraph, tiêu đề, mô tả, giá, ảnh.
+* **Dữ liệu JSON nhúng trong HTML** (`source: embedded`): đọc `<script type="application/json">`
+  (Next.js `__NEXT_DATA__`, Facebook…), không cần selector CSS.
+* **`find_key`**: tìm đệ quy mọi object chứa một khoá, ở bất kỳ độ sâu nào. Dùng cho GraphQL lồng sâu
+  và hay đổi cấu trúc. Đọc được cả body dạng `for (;;);{...}` và nhiều JSON nối theo dòng.
 * CSV ghi bằng `utf-8-sig` để Excel hiển thị đúng tiếng Việt; có xuất thẳng `.xlsx`.
 
 ## Cấu trúc file cấu hình
@@ -145,10 +156,34 @@ Các khoá của một trường: `css`, `xpath`, `json` (đường dẫn chấm
   Đổi `cg` (danh mục) và `region_v2` (tỉnh/thành) trong `template`.
 * `presets/chotot_html.yaml`: ChoTot qua giao diện web bằng trình duyệt ẩn danh, có adaptive selector.
   Dùng làm dự phòng khi API thay đổi.
+* `presets/facebook_marketplace.yaml`: Facebook Marketplace (xem mục bên dưới).
 * `presets/generic_ecommerce.yaml`: mẫu cho shop, rao vặt, tin tức (ví dụ books.toscrape.com).
 
 > Các endpoint và selector của ChoTot có thể thay đổi. Khi preset không còn chạy, dùng `discover` để tìm API
 > mới, hoặc `similar` để sinh lại selector.
+
+## Facebook Marketplace
+
+Marketplace khác ChoTot ở bốn điểm, và preset xử lý từng điểm như sau:
+
+| Vấn đề | Cách xử lý |
+|---|---|
+| Phần lớn nội dung chỉ hiện khi đã đăng nhập | Lệnh `login` mở trình duyệt để bạn tự đăng nhập. Phiên được lưu ở `profiles/facebook` và dùng lại cho các lần chạy sau |
+| Trang render bằng JavaScript, class CSS bị mã hoá và đổi liên tục | Không dùng selector CSS. Lấy dữ liệu từ JSON nhúng trong HTML và từ response `/api/graphql/` |
+| Tin mới chỉ tải khi cuộn trang | `fetch.scroll` cuộn trang nhiều lần, dừng khi không còn tải thêm |
+| Cấu trúc GraphQL lồng sâu, hay đổi | `find_key: marketplace_listing_title` tìm mọi object tin đăng ở bất kỳ độ sâu nào |
+
+Rủi ro cần biết:
+
+* **Điều khoản của Meta cấm thu thập tự động.** Tài khoản dùng để crawl có thể bị checkpoint, giới hạn hoặc khoá.
+  Hãy dùng tài khoản phụ.
+* Preset chạy rất chậm: 1 tab, nghỉ 8 giây giữa các trang, tối đa 5 trang và 300 tin mỗi lần chạy.
+  Tăng các con số này thì rủi ro bị khoá tăng theo.
+* Preset **không** lấy tên hay hồ sơ người bán. Thu thập dữ liệu cá nhân phải tuân thủ Nghị định 13/2023/NĐ-CP.
+* Tên trường GraphQL (`marketplace_listing_title`, `listing_price`, …) do Facebook tự đặt và có thể đổi bất kỳ lúc
+  nào. Khi không ra dữ liệu, chạy
+  `python universal_crawler.py discover "<URL marketplace>" --filter graphql --show` để xem response thật,
+  rồi sửa `find_key` và `fields` trong preset.
 
 ## Kiểm thử
 

@@ -71,6 +71,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(_shop_page(2))
         if u.path.startswith("/catalogue/"):
             return self._send(_book(u.path.split("/")[2]))
+        if u.path == "/mp":  # trang kiểu Marketplace: dữ liệu nằm trong JSON nhúng, lồng sâu
+            blob = {"require": [["S", {"__bbox": {"result": {"data": {"edges": [
+                {"node": {"listing": {"id": "1", "marketplace_listing_title": "Xe SH", "listing_price": {"amount": "85000000.00"}}}},
+                {"node": {"listing": {"id": "2", "marketplace_listing_title": "Xe Vision", "listing_price": {"amount": "30000000.00"}}}},
+            ]}}}}]]}
+            return self._send(f'<html><body><script type="application/json">{json.dumps(blob)}</script></body></html>')
         if u.path == "/blocked":
             return self._send("<html><body>Just a moment...<div id='cf-chl-widget'></div></body></html>")
         self._send("not found", status=404)
@@ -184,3 +190,32 @@ def test_block_detection(server, tmp_path):
            "crawl": {"log_level": "CRITICAL", "max_blocked_retries": 1},
            "output": {"path": str(tmp_path / "blk"), "formats": ["json"]}}
     assert uc.run_config(cfg) == []  # trang challenge bị nhận diện là bị chặn, không xuất dữ liệu rác
+
+
+def test_deep_find_and_multi_document_json():
+    body = b'for (;;);{"data":{"a":[{"node":{"marketplace_listing_title":"A","id":"1"}}]}}\n{"extra":{"b":{"marketplace_listing_title":"B"}}}'
+    docs = uc.parse_json_documents(body)
+    assert len(docs) == 2
+    found = [d["marketplace_listing_title"] for doc in docs for d in uc.deep_find(doc, "marketplace_listing_title")]
+    assert found == ["A", "B"]
+
+
+def test_embedded_json_source(server, tmp_path):
+    cfg = {"name": "mp", "start_urls": [server + "/mp"], "fetch": {"mode": "http"}, "crawl": {"log_level": "WARNING"},
+           "items": [{"source": "embedded", "find_key": "marketplace_listing_title", "fields": {
+               "id": {"json": "id"}, "ten": {"json": "marketplace_listing_title"},
+               "gia": {"json": "listing_price.amount", "type": "number"}}}],
+           "output": {"path": str(tmp_path / "mp"), "formats": ["json"]}}
+    items = uc.run_config(cfg)
+    assert [(i["ten"], i["gia"]) for i in items] == [("Xe SH", 85_000_000), ("Xe Vision", 30_000_000)]
+
+
+def test_network_source_requires_stealth():
+    with pytest.raises(ValueError):
+        uc.UniversalSpider({"name": "x", "start_urls": ["http://a"], "items": [{"source": "network"}]})
+
+
+def test_facebook_preset_loads():
+    cfg = uc.load_config(Path(__file__).resolve().parents[1] / "presets" / "facebook_marketplace.yaml")
+    assert cfg["fetch"]["mode"] == "stealth" and cfg["crawl"]["concurrency"] == 1
+    assert cfg["items"][0]["find_key"] == "marketplace_listing_title"

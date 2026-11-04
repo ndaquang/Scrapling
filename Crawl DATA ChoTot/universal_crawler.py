@@ -26,6 +26,7 @@ Lệnh:
   python universal_crawler.py discover URL               # tìm API JSON ẩn
   python universal_crawler.py similar URL "mẫu văn bản"   # tự sinh selector danh sách
   python universal_crawler.py markdown URL --max-pages 50
+  python universal_crawler.py login URL --profile ./profiles/fb   # đăng nhập thủ công, lưu phiên
 """
 
 from __future__ import annotations
@@ -192,6 +193,51 @@ def json_path(data: Any, path: str, default: Any = None) -> Any:
     return current[0] if current else default
 
 
+def deep_find(data: Any, key: str) -> List[Dict[str, Any]]:
+    """Tìm đệ quy mọi object (dict) có chứa `key`, ở bất kỳ độ sâu nào.
+
+    Hữu ích với API GraphQL (Facebook, Instagram…) có cấu trúc lồng sâu và hay thay đổi.
+    """
+    found: List[Dict[str, Any]] = []
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if key in node:
+                found.append(node)
+            stack.extend(reversed(list(node.values())))
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+    return found
+
+
+def parse_json_documents(body: Union[bytes, str]) -> List[Any]:
+    """Đọc body JSON, kể cả dạng nhiều object nối nhau theo dòng và tiền tố chống JSON-hijacking ('for (;;);')."""
+    text = body.decode("utf-8", "ignore") if isinstance(body, bytes) else body
+    text = re.sub(r"^\s*(for\s*\(;;\);|while\s*\(1\);|\)\]\}',?)", "", text)
+    try:
+        return [json.loads(text)]
+    except ValueError:
+        pass
+    docs = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line[:1] in ("{", "["):
+            try:
+                docs.append(json.loads(line))
+            except ValueError:
+                continue
+    return docs
+
+
+def embedded_json(response: Response) -> List[Any]:
+    """Lấy dữ liệu JSON nhúng sẵn trong HTML (Next.js __NEXT_DATA__, Facebook, JSON-LD…)."""
+    docs = []
+    for raw in response.css("script[type*='json']::text").getall():
+        docs.extend(parse_json_documents(str(raw)))
+    return docs
+
+
 def _normalize_spec(spec: Any) -> Dict[str, Any]:
     """Một trường có thể là chuỗi 'h1::text' hoặc dict chi tiết."""
     if isinstance(spec, str):
@@ -341,6 +387,11 @@ class ItemRule:
         self.follow = cfg.get("follow")  # {"url": "https://.../{id}", "rule": "detail", "merge": true}
         self.yield_items = cfg.get("emit", True)
         self.only_followed = cfg.get("only_followed", False)
+        # Nguồn dữ liệu: page (nội dung response), embedded (JSON nhúng trong <script>),
+        # network (các response XHR/fetch mà trình duyệt đã gọi, khớp `network_pattern`)
+        self.sources = _as_list(cfg.get("source", "page"))
+        self.network_pattern = cfg.get("network_pattern")
+        self.find_key = cfg.get("find_key")  # tìm đệ quy các object có khoá này
 
     def applies(self, response: Response) -> bool:
         target = response.meta.get("_rule")
@@ -358,14 +409,30 @@ class ItemRule:
             return True
         return response.body[:1].strip() in (b"{", b"[")
 
-    def extract(self, response: Response) -> List[Dict[str, Any]]:
-        as_json = self.is_json(response)
+    def _json_nodes(self, docs: List[Any]) -> List[Any]:
+        nodes: List[Any] = []
+        for doc in docs:
+            if self.find_key:
+                nodes.extend(deep_find(doc, self.find_key))
+            elif self.list:
+                nodes.extend(_as_list(json_path(doc, self.list)))
+            else:
+                nodes.append(doc)
+        return nodes
+
+    def extract(self, response: Response, network_bodies: Optional[List[bytes]] = None) -> List[Dict[str, Any]]:
         parent = response.meta.get("_parent") or {}
-        nodes: List[Any]
+        docs: List[Any] = []
+        if "embedded" in self.sources:
+            docs.extend(embedded_json(response))
+        if "network" in self.sources:
+            for body in network_bodies or []:
+                docs.extend(parse_json_documents(body))
+        as_json = bool(docs) or (self.sources != ["page"]) or self.is_json(response)
+        if "page" in self.sources and self.is_json(response):
+            docs.append(_response_json(response))
         if as_json:
-            data = _response_json(response)
-            nodes = _as_list(json_path(data, self.list)) if self.list else [data]
-            pairs = [(None, d) for d in nodes]
+            pairs = [(None, d) for d in self._json_nodes(docs)]
         else:
             nodes = list(response.css(self.list)) if self.list else [response]
             pairs = [(n, None) for n in nodes]
@@ -426,7 +493,13 @@ class UniversalSpider(Spider):
         self.max_depth = int(crawl.get("max_depth", 0))
 
         # Không khai báo `items` -> tự trích xuất mọi trang (JSON-LD, OpenGraph, giá…)
+        self._net_after = 0  # id của response mạng cuối cùng đã xử lý
         self.rules = [ItemRule(r, i) for i, r in enumerate(_as_list(config.get("items")) or [{"auto_extract": True}])]
+        self._uses_network = any("network" in r.sources for r in self.rules)
+        if self._uses_network and self.mode != "stealth":
+            raise ValueError(
+                "Rule có `source: network` cần `fetch.mode: stealth` (chỉ trình duyệt mới ghi được network)"
+            )
         self.follow_rules = [self._make_link_extractor(f) for f in _as_list(config.get("follow"))]
         self.pagination = config.get("pagination") or {}
         self._page_re = re.compile(self.pagination["match"]) if self.pagination.get("match") else None
@@ -473,6 +546,16 @@ class UniversalSpider(Spider):
             "locale": fetch.get("locale", "vi-VN"),
             "max_pages": int(fetch.get("browser_tabs", 2)),
         }
+        if fetch.get("user_data_dir"):  # hồ sơ trình duyệt riêng: giữ cookie đăng nhập giữa các lần chạy
+            Path(fetch["user_data_dir"]).mkdir(parents=True, exist_ok=True)
+            stealth_kwargs["user_data_dir"] = str(Path(fetch["user_data_dir"]).resolve())
+        if fetch.get("headless") is not None:
+            stealth_kwargs["headless"] = bool(fetch["headless"])
+        if fetch.get("scroll"):
+            stealth_kwargs["page_action"] = make_scroller(fetch["scroll"])
+        if self._uses_network:
+            stealth_kwargs["record_requests"] = True
+            stealth_kwargs["max_recorded_requests"] = int(fetch.get("max_recorded_requests", 2000))
         stealth_kwargs.update(fetch.get("stealth") or {})
         if fetch.get("adaptive"):
             selector_cfg = {"adaptive": True}
@@ -537,6 +620,15 @@ class UniversalSpider(Spider):
         for url in self.start_urls:
             yield Request(url, meta={"_depth": 0}, **self._request_kwargs())
 
+    def _network_bodies(self, rule: "ItemRule") -> List[bytes]:
+        """Lấy body các response XHR/fetch mới (chưa xử lý) mà trình duyệt đã ghi lại, khớp `network_pattern`."""
+        if "network" not in rule.sources:
+            return []
+        recorder = self._session_manager.get("stealth").network
+        records = recorder.search(url_pattern=rule.network_pattern, after_id=self._net_after, limit=None)
+        self._net_after = max([self._net_after] + [int(r.meta.get("network_id", 0)) for r in records])
+        return [r.body for r in records if r.body]
+
     def _limit_reached(self) -> bool:
         return bool(self.max_items and self._items >= self.max_items)
 
@@ -550,7 +642,7 @@ class UniversalSpider(Spider):
         for rule in self.rules:
             if not rule.applies(response):
                 continue
-            for item in rule.extract(response):
+            for item in rule.extract(response, self._network_bodies(rule)):
                 found_items += 1
                 if rule.follow:
                     url_tpl = rule.follow["url"] if isinstance(rule.follow, dict) else rule.follow
@@ -628,6 +720,43 @@ class UniversalSpider(Spider):
         self._live.close()
         if self.incremental and self.dedupe_key:
             self._state_file.write_text(json.dumps(sorted(self._seen_keys), ensure_ascii=False), encoding="utf-8")
+
+
+def make_scroller(cfg: Any):
+    """Tạo `page_action` cuộn trang để tải thêm nội dung (infinite scroll).
+
+    cfg: số lần cuộn, hoặc {times, pause_ms, distance, stop_when_static, click_css}
+    """
+    if not isinstance(cfg, dict):
+        cfg = {"times": int(cfg)}
+    times = int(cfg.get("times", 5))
+    pause = int(cfg.get("pause_ms", 1500))
+    distance = int(cfg.get("distance", 3000))
+    stop_static = bool(cfg.get("stop_when_static", True))
+    click_css = cfg.get("click_css")  # vd: nút "Xem thêm"
+
+    async def scroll(page):
+        last_height = -1
+        static_rounds = 0
+        for _ in range(times):
+            if click_css:
+                try:
+                    btn = page.locator(click_css).first
+                    if await btn.count():
+                        await btn.click(timeout=2000)
+                except Exception:
+                    pass
+            await page.mouse.wheel(0, distance)
+            await page.wait_for_timeout(pause)
+            height = await page.evaluate("document.body.scrollHeight")
+            if stop_static:
+                static_rounds = static_rounds + 1 if height == last_height else 0
+                if static_rounds >= 2:  # 2 lần liên tiếp không tải thêm -> hết dữ liệu
+                    break
+            last_height = height
+        return page
+
+    return scroll
 
 
 # --------------------------------------------------------------------------------------
@@ -832,6 +961,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     p_quick.add_argument("--out", default="output/quick")
     p_quick.add_argument("--formats", default="json,csv")
 
+    p_login = sub.add_parser("login", help="Mở trình duyệt để bạn tự đăng nhập, lưu phiên vào thư mục profile")
+    p_login.add_argument("url")
+    p_login.add_argument("--profile", required=True, help="Thư mục profile (trùng với fetch.user_data_dir)")
+    p_login.add_argument("--browser", help="Đường dẫn Chrome/Chromium riêng (executable_path)")
+
     p_disc = sub.add_parser("discover", help="Tìm các API JSON ẩn phía sau trang (dùng trình duyệt)")
     p_disc.add_argument("url")
     p_disc.add_argument("--filter", help="Regex lọc URL API")
@@ -887,6 +1021,21 @@ def main(argv: Optional[List[str]] = None) -> None:
         if args.next:
             cfg["pagination"] = {"next_css": args.next}
         run_config(cfg)
+
+    elif args.cmd == "login":
+        from scrapling.fetchers import StealthySession
+
+        profile = Path(args.profile).resolve()
+        profile.mkdir(parents=True, exist_ok=True)
+        extra = {"executable_path": args.browser} if args.browser else {}
+
+        def wait_for_user(page):
+            input("\n>>> Hãy đăng nhập trong cửa sổ trình duyệt, xong thì quay lại đây nhấn Enter... ")
+            return page
+
+        with StealthySession(headless=False, user_data_dir=str(profile), timeout=600_000, **extra) as session:
+            session.fetch(args.url, page_action=wait_for_user, network_idle=False)
+        print(f"✔ Đã lưu phiên đăng nhập vào {profile}")
 
     elif args.cmd == "discover":
         for rec in discover_apis(args.url, args.filter, args.scroll, not args.show, args.browser):

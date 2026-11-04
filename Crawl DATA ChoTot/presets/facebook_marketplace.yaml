@@ -1,0 +1,77 @@
+# Facebook Marketplace – lấy tin đăng từ một trang tìm kiếm/danh mục.
+#
+# ⚠ Đọc trước khi chạy:
+#   * Điều khoản của Meta cấm thu thập dữ liệu tự động. Tài khoản dùng để crawl có thể bị checkpoint,
+#     giới hạn hoặc khoá. Dùng TÀI KHOẢN PHỤ, không dùng tài khoản chính.
+#   * Chạy chậm, ít trang, không chạy song song (cấu hình bên dưới đã đặt sẵn như vậy).
+#   * Preset KHÔNG lấy thông tin cá nhân người bán (tên, hồ sơ). Đừng thêm vào nếu không có cơ sở pháp lý
+#     (Nghị định 13/2023/NĐ-CP về bảo vệ dữ liệu cá nhân).
+#
+# Cách dùng:
+#   1) Đăng nhập một lần (mở cửa sổ trình duyệt, bạn tự đăng nhập, phiên được lưu lại):
+#        python universal_crawler.py login https://www.facebook.com/ --profile profiles/facebook
+#   2) Chạy:
+#        python universal_crawler.py run presets/facebook_marketplace.yaml --max-items 200
+#   3) Nếu không ra dữ liệu: Facebook đã đổi cấu trúc. Kiểm tra API thật bằng
+#        python universal_crawler.py discover "<URL marketplace>" --filter graphql --show
+#      rồi sửa `find_key` / các trường bên dưới cho khớp.
+#
+# URL: https://www.facebook.com/marketplace/<thành phố>/search?query=<từ khoá>
+#   thành phố: hochiminhcity, hanoi, danang… (hoặc id số) ; thêm &minPrice=&maxPrice=&daysSinceListed=1
+name: facebook_marketplace
+start_urls:
+  - https://www.facebook.com/marketplace/hochiminhcity/search?query=iphone%2015
+  # - https://www.facebook.com/marketplace/hanoi/search?query=xe%20m%C3%A1y
+
+fetch:
+  mode: stealth                    # bắt buộc: Marketplace render bằng JavaScript + cần ghi network
+  user_data_dir: profiles/facebook # phiên đăng nhập tạo bởi lệnh `login`
+  headless: true                   # đặt false để xem trình duyệt chạy
+  locale: vi-VN
+  browser_tabs: 1
+  scroll:                          # cuộn để Facebook tải thêm tin (infinite scroll)
+    times: 15
+    pause_ms: 2500
+    distance: 2500
+  stealth:
+    network_idle: false            # Facebook không bao giờ "idle", đừng chờ
+    solve_cloudflare: false
+    block_ads: true
+    disable_resources: false       # để ảnh/script tải bình thường, giống người dùng thật
+    timeout: 90000
+    wait: 3000
+
+crawl:
+  concurrency: 1                   # không chạy song song
+  delay: 8                         # nghỉ 8 giây giữa các trang
+  max_pages: 5
+  max_items: 300
+  max_blocked_retries: 0
+  log_level: INFO
+
+items:
+  - name: listing
+    # Kết quả đầu tiên nằm trong JSON nhúng ở HTML, các kết quả khi cuộn đến từ /api/graphql/
+    source: [embedded, network]
+    network_pattern: "/api/graphql/"
+    find_key: marketplace_listing_title   # mọi object tin đăng đều có khoá này
+    required: [id, tieu_de]
+    fields:
+      id: {json: id}
+      tieu_de: {json: marketplace_listing_title}
+      tieu_de_tuy_chinh: {json: custom_title}
+      gia: {json: listing_price.amount, type: number}
+      gia_hien_thi: {json: listing_price.formatted_amount}
+      gia_goc: {json: strikethrough_price.formatted_amount}
+      thanh_pho: {json: location.reverse_geocode.city}
+      khu_vuc: {json: location.reverse_geocode.state}
+      anh: {json: primary_listing_photo.image.uri}
+      da_ban: {json: is_sold, type: bool}
+      dang_cho: {json: is_pending, type: bool}
+      link: {json: id, format: "https://www.facebook.com/marketplace/item/{value}/"}
+
+output:
+  path: output/facebook_marketplace
+  formats: [json, csv, xlsx]
+  dedupe_key: id
+  incremental: true                # chạy lại chỉ lấy tin mới
