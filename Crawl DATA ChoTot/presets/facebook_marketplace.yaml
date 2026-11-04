@@ -7,13 +7,14 @@
 #   * Preset KHÔNG lấy thông tin cá nhân người bán (tên, hồ sơ). Đừng thêm vào nếu không có cơ sở pháp lý
 #     (Nghị định 13/2023/NĐ-CP về bảo vệ dữ liệu cá nhân).
 #
-# Cách dùng:
-#   1) Đăng nhập một lần (mở cửa sổ trình duyệt, bạn tự đăng nhập, phiên được lưu lại):
-#        python universal_crawler.py login https://www.facebook.com/ --profile profiles/facebook
+# Cách dùng (chạy trên máy tính của bạn):
+#   1) Đăng nhập một lần. Cửa sổ Chrome mở ra, bạn tự đăng nhập Facebook (kể cả mã 2FA),
+#      xong quay lại cửa sổ dòng lệnh nhấn Enter. Phiên được lưu ở profiles/facebook:
+#        python universal_crawler.py login https://www.facebook.com/ --config presets/facebook_marketplace.yaml
 #   2) Chạy:
 #        python universal_crawler.py run presets/facebook_marketplace.yaml --max-items 200
-#   3) Nếu không ra dữ liệu: Facebook đã đổi cấu trúc. Kiểm tra API thật bằng
-#        python universal_crawler.py discover "<URL marketplace>" --filter graphql --show
+#   3) Nếu không ra dữ liệu: Facebook đã đổi cấu trúc. Xem API thật (dùng chung phiên đăng nhập):
+#        python universal_crawler.py discover "<URL marketplace>" --filter graphql --show --config presets/facebook_marketplace.yaml
 #      rồi sửa `find_key` / các trường bên dưới cho khớp.
 #
 # URL: https://www.facebook.com/marketplace/<thành phố>/search?query=<từ khoá>
@@ -26,14 +27,18 @@ start_urls:
 fetch:
   mode: stealth                    # bắt buộc: Marketplace render bằng JavaScript + cần ghi network
   user_data_dir: profiles/facebook # phiên đăng nhập tạo bởi lệnh `login`
-  headless: true                   # đặt false để xem trình duyệt chạy
+  headless: false                  # hiện cửa sổ: giống người dùng thật hơn, và bạn thấy được nếu Facebook hỏi xác minh
   locale: vi-VN
   browser_tabs: 1
   scroll:                          # cuộn để Facebook tải thêm tin (infinite scroll)
     times: 15
     pause_ms: 2500
     distance: 2500
+  block_url_patterns:              # bị đá ra trang đăng nhập/checkpoint -> dừng ngay, không thử lại
+    - "facebook\\.com/login"
+    - "facebook\\.com/checkpoint"
   stealth:
+    real_chrome: true              # dùng Google Chrome đã cài trên máy (ít bị nghi ngờ hơn Chromium). Không có Chrome thì đặt false
     network_idle: false            # Facebook không bao giờ "idle", đừng chờ
     solve_cloudflare: false
     block_ads: true

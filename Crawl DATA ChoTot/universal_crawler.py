@@ -488,6 +488,8 @@ class UniversalSpider(Spider):
 
         self.mode = fetch.get("mode", "http")  # http | stealth | auto
         self.block_markers = _as_list(fetch.get("block_markers", DEFAULT_BLOCK_MARKERS))
+        # URL cuối cùng khớp mẫu này = bị chuyển sang trang đăng nhập/checkpoint -> coi như bị chặn
+        self.block_url_patterns = [re.compile(p) for p in _as_list(fetch.get("block_url_patterns"))]
         self.max_pages = int(crawl.get("max_pages", 0))
         self.max_items = int(crawl.get("max_items", 0))
         self.max_depth = int(crawl.get("max_depth", 0))
@@ -547,7 +549,13 @@ class UniversalSpider(Spider):
             "max_pages": int(fetch.get("browser_tabs", 2)),
         }
         if fetch.get("user_data_dir"):  # hồ sơ trình duyệt riêng: giữ cookie đăng nhập giữa các lần chạy
-            Path(fetch["user_data_dir"]).mkdir(parents=True, exist_ok=True)
+            profile_dir = Path(fetch["user_data_dir"])
+            if not profile_dir.exists() or not any(profile_dir.iterdir()):
+                self.logger.warning(
+                    f"Profile '{profile_dir}' còn trống: chưa đăng nhập. Chạy trước: "
+                    "python universal_crawler.py login <URL> --config <file cấu hình>"
+                )
+            profile_dir.mkdir(parents=True, exist_ok=True)
             stealth_kwargs["user_data_dir"] = str(Path(fetch["user_data_dir"]).resolve())
         if fetch.get("headless") is not None:
             stealth_kwargs["headless"] = bool(fetch["headless"])
@@ -577,6 +585,13 @@ class UniversalSpider(Spider):
 
     # ---------------- chặn & thử lại ----------------
     async def is_blocked(self, response: Response) -> bool:
+        for pattern in self.block_url_patterns:
+            if pattern.search(response.url):
+                self.logger.error(
+                    f"Bị chuyển tới {response.url} — phiên đăng nhập đã hết hạn hoặc tài khoản bị checkpoint. "
+                    "Mở trình duyệt bằng lệnh `login` để kiểm tra/đăng nhập lại, và tạm dừng crawl một thời gian."
+                )
+                return True
         if response.status in BLOCK_STATUS:
             return True
         if self.block_markers and response.status == 200 and len(response.body) < 200_000:
@@ -842,12 +857,37 @@ def run_config(config: Dict[str, Any], crawldir: Optional[str] = None) -> List[D
 # --------------------------------------------------------------------------------------
 # Công cụ hỗ trợ: discover (API ẩn) & similar (tự sinh selector)
 # --------------------------------------------------------------------------------------
+def browser_options(
+    config: Optional[str] = None,
+    profile: Optional[str] = None,
+    browser: Optional[str] = None,
+    real_chrome: bool = False,
+) -> Dict[str, Any]:
+    """Tuỳ chọn trình duyệt dùng chung cho `login`, `discover` và `run`.
+
+    Lấy từ phần `fetch` của file cấu hình (nếu có), tham số dòng lệnh được ưu tiên hơn. Nhờ vậy cả ba lệnh
+    mở cùng một loại trình duyệt với cùng một profile, nên phiên đăng nhập tạo bởi `login` dùng lại được.
+    """
+    fetch = (load_config(config).get("fetch") or {}) if config else {}
+    stealth = fetch.get("stealth") or {}
+    opts: Dict[str, Any] = {"locale": fetch.get("locale", "vi-VN")}
+    profile = profile or fetch.get("user_data_dir")
+    if profile:
+        Path(profile).mkdir(parents=True, exist_ok=True)
+        opts["user_data_dir"] = str(Path(profile).resolve())
+    if real_chrome or stealth.get("real_chrome"):
+        opts["real_chrome"] = True
+    if browser or stealth.get("executable_path"):
+        opts["executable_path"] = browser or stealth["executable_path"]
+    return opts
+
+
 def discover_apis(
     url: str,
     pattern: Optional[str] = None,
     scroll: int = 2,
     headless: bool = True,
-    executable_path: Optional[str] = None,
+    **browser_kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Mở trang bằng trình duyệt ẩn danh, ghi lại mọi request XHR/fetch trả về JSON."""
     from scrapling.fetchers import StealthySession
@@ -858,9 +898,8 @@ def discover_apis(
             page.wait_for_timeout(1200)
 
     found = []
-    extra = {"executable_path": executable_path} if executable_path else {}
     with StealthySession(
-        headless=headless, record_requests=True, block_ads=True, network_idle=True, **extra
+        headless=headless, record_requests=True, block_ads=True, network_idle=False, wait=3000, **browser_kwargs
     ) as session:
         session.fetch(url, page_action=scroll_page if scroll else None)
         for rec in session.network.search(url_pattern=pattern, limit=None, include_static=False):
@@ -963,7 +1002,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     p_login = sub.add_parser("login", help="Mở trình duyệt để bạn tự đăng nhập, lưu phiên vào thư mục profile")
     p_login.add_argument("url")
-    p_login.add_argument("--profile", required=True, help="Thư mục profile (trùng với fetch.user_data_dir)")
+    p_login.add_argument("--config", help="Lấy profile và loại trình duyệt từ file cấu hình (khuyên dùng)")
+    p_login.add_argument("--profile", help="Thư mục profile (mặc định: fetch.user_data_dir trong --config)")
+    p_login.add_argument("--real-chrome", action="store_true", help="Dùng Google Chrome đã cài trên máy")
     p_login.add_argument("--browser", help="Đường dẫn Chrome/Chromium riêng (executable_path)")
 
     p_disc = sub.add_parser("discover", help="Tìm các API JSON ẩn phía sau trang (dùng trình duyệt)")
@@ -972,6 +1013,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     p_disc.add_argument("--scroll", type=int, default=2)
     p_disc.add_argument("--show", action="store_true", help="Hiện cửa sổ trình duyệt")
     p_disc.add_argument("--browser", help="Đường dẫn Chrome/Chromium riêng (executable_path)")
+    p_disc.add_argument("--config", help="Dùng profile đăng nhập và trình duyệt trong file cấu hình")
+    p_disc.add_argument("--profile", help="Thư mục profile đăng nhập")
+    p_disc.add_argument("--real-chrome", action="store_true", help="Dùng Google Chrome đã cài trên máy")
 
     p_sim = sub.add_parser("similar", help="Tự sinh selector danh sách từ một văn bản mẫu")
     p_sim.add_argument("url")
@@ -1025,20 +1069,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     elif args.cmd == "login":
         from scrapling.fetchers import StealthySession
 
-        profile = Path(args.profile).resolve()
-        profile.mkdir(parents=True, exist_ok=True)
-        extra = {"executable_path": args.browser} if args.browser else {}
+        opts = browser_options(args.config, args.profile, args.browser, args.real_chrome)
+        if "user_data_dir" not in opts:
+            raise SystemExit("Cần --config (có fetch.user_data_dir) hoặc --profile")
 
         def wait_for_user(page):
             input("\n>>> Hãy đăng nhập trong cửa sổ trình duyệt, xong thì quay lại đây nhấn Enter... ")
             return page
 
-        with StealthySession(headless=False, user_data_dir=str(profile), timeout=600_000, **extra) as session:
+        with StealthySession(headless=False, timeout=600_000, **opts) as session:
             session.fetch(args.url, page_action=wait_for_user, network_idle=False)
-        print(f"✔ Đã lưu phiên đăng nhập vào {profile}")
+        print(f"✔ Đã lưu phiên đăng nhập vào {opts['user_data_dir']}")
 
     elif args.cmd == "discover":
-        for rec in discover_apis(args.url, args.filter, args.scroll, not args.show, args.browser):
+        opts = browser_options(args.config, args.profile, args.browser, args.real_chrome)
+        for rec in discover_apis(args.url, args.filter, args.scroll, not args.show, **opts):
             mark = "JSON" if rec.get("json") else "    "
             extra = f" lists={rec['lists']}" if rec.get("lists") else ""
             print(f"[{mark}] {rec['status']} {rec['method']:4} {rec['bytes']:>8}B  {rec['url']}{extra}")

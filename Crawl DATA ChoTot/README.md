@@ -33,7 +33,7 @@ python universal_crawler.py discover https://www.chotot.com/mua-ban-bat-dong-san
 python universal_crawler.py markdown https://docs.example.com/ --max-pages 100
 
 # 6) Trang cần đăng nhập (Facebook…): tự đăng nhập một lần, phiên được lưu vào thư mục profile
-python universal_crawler.py login https://www.facebook.com/ --profile profiles/facebook
+python universal_crawler.py login https://www.facebook.com/ --config presets/facebook_marketplace.yaml
 python universal_crawler.py run presets/facebook_marketplace.yaml --max-items 200
 ```
 
@@ -173,6 +173,39 @@ Marketplace khác ChoTot ở bốn điểm, và preset xử lý từng điểm n
 | Tin mới chỉ tải khi cuộn trang | `fetch.scroll` cuộn trang nhiều lần, dừng khi không còn tải thêm |
 | Cấu trúc GraphQL lồng sâu, hay đổi | `find_key: marketplace_listing_title` tìm mọi object tin đăng ở bất kỳ độ sâu nào |
 
+### Chạy trên máy tính của bạn với tài khoản Facebook
+
+1. Cài Python 3.10 trở lên và Google Chrome. Trên Windows, khi cài Python nhớ tick "Add python.exe to PATH".
+2. Mở Terminal (Windows: PowerShell), vào thư mục `Crawl DATA ChoTot` rồi cài thư viện:
+   ```bash
+   pip install -r requirements.txt
+   scrapling install
+   ```
+3. Đăng nhập một lần:
+   ```bash
+   python universal_crawler.py login https://www.facebook.com/ --config presets/facebook_marketplace.yaml
+   ```
+   Một cửa sổ Chrome mở ra. Đăng nhập Facebook như bình thường, kể cả mã 2FA, và bấm "Lưu thiết bị"
+   nếu được hỏi. Mở thử một trang Marketplace để chắc chắn đã vào được, rồi quay lại Terminal nhấn Enter.
+   Phiên đăng nhập được lưu ở `profiles/facebook`.
+4. Sửa `start_urls` trong `presets/facebook_marketplace.yaml` theo khu vực và từ khoá bạn cần, rồi chạy:
+   ```bash
+   python universal_crawler.py run presets/facebook_marketplace.yaml --max-items 200
+   ```
+   Kết quả nằm ở `output/facebook_marketplace.json`, `.csv` và `.xlsx`.
+
+Một số lưu ý khi dùng tài khoản thật:
+
+* Thư mục `profiles/facebook` chứa cookie đăng nhập, tức là quyền vào tài khoản của bạn. Đừng gửi thư mục này
+  cho người khác và đừng đưa lên Git (`.gitignore` đã loại trừ sẵn).
+* Đừng mở cùng lúc thư mục profile này bằng hai lệnh, ví dụ chạy `run` khi cửa sổ `login` còn mở.
+* Mặc định cửa sổ trình duyệt hiện lên (`headless: false`). Cách này giống người dùng thật hơn, và bạn thấy ngay
+  nếu Facebook hỏi xác minh. Đừng thao tác vào cửa sổ đó trong lúc crawl.
+* Nếu Facebook đá ra trang đăng nhập hoặc checkpoint, crawler dừng ngay và báo lỗi, không thử lại liên tục.
+  Khi đó hãy chạy lại lệnh `login` để xử lý xác minh bằng tay, và nghỉ vài giờ trước khi crawl tiếp.
+* Không có Google Chrome thì đặt `real_chrome: false` trong preset để dùng Chromium của Scrapling.
+  Sau đó chạy lại `login`, vì profile của Chrome và Chromium không dùng chung được.
+
 Rủi ro cần biết:
 
 * **Điều khoản của Meta cấm thu thập tự động.** Tài khoản dùng để crawl có thể bị checkpoint, giới hạn hoặc khoá.
@@ -182,7 +215,8 @@ Rủi ro cần biết:
 * Preset **không** lấy tên hay hồ sơ người bán. Thu thập dữ liệu cá nhân phải tuân thủ Nghị định 13/2023/NĐ-CP.
 * Tên trường GraphQL (`marketplace_listing_title`, `listing_price`, …) do Facebook tự đặt và có thể đổi bất kỳ lúc
   nào. Khi không ra dữ liệu, chạy
-  `python universal_crawler.py discover "<URL marketplace>" --filter graphql --show` để xem response thật,
+  `python universal_crawler.py discover "<URL marketplace>" --filter graphql --show --config presets/facebook_marketplace.yaml`
+  để xem response thật (dùng chung phiên đăng nhập),
   rồi sửa `find_key` và `fields` trong preset.
 
 ## Kiểm thử

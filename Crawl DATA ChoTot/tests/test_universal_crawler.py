@@ -77,6 +77,14 @@ class Handler(BaseHTTPRequestHandler):
                 {"node": {"listing": {"id": "2", "marketplace_listing_title": "Xe Vision", "listing_price": {"amount": "30000000.00"}}}},
             ]}}}}]]}
             return self._send(f'<html><body><script type="application/json">{json.dumps(blob)}</script></body></html>')
+        if u.path == "/marketplace-expired":  # phiên hết hạn: bị chuyển tới trang đăng nhập
+            self.send_response(302)
+            self.send_header("Location", "/login/?next=marketplace")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if u.path == "/login/":
+            return self._send("<html><body><form>Đăng nhập</form></body></html>")
         if u.path == "/blocked":
             return self._send("<html><body>Just a moment...<div id='cf-chl-widget'></div></body></html>")
         self._send("not found", status=404)
@@ -219,3 +227,18 @@ def test_facebook_preset_loads():
     cfg = uc.load_config(Path(__file__).resolve().parents[1] / "presets" / "facebook_marketplace.yaml")
     assert cfg["fetch"]["mode"] == "stealth" and cfg["crawl"]["concurrency"] == 1
     assert cfg["items"][0]["find_key"] == "marketplace_listing_title"
+
+
+def test_login_redirect_is_detected(server, tmp_path):
+    cfg = {"name": "lg", "start_urls": [server + "/marketplace-expired"],
+           "fetch": {"mode": "http", "block_url_patterns": ["/login/"]},
+           "crawl": {"log_level": "CRITICAL", "max_blocked_retries": 0},
+           "output": {"path": str(tmp_path / "lg"), "formats": ["json"]}}
+    assert uc.run_config(cfg) == []  # trang đăng nhập không bị xuất thành dữ liệu
+
+
+def test_browser_options_from_config(tmp_path):
+    preset = Path(__file__).resolve().parents[1] / "presets" / "facebook_marketplace.yaml"
+    opts = uc.browser_options(str(preset), profile=str(tmp_path / "p"))
+    assert opts["user_data_dir"] == str((tmp_path / "p").resolve())
+    assert opts["real_chrome"] is True and opts["locale"] == "vi-VN"
