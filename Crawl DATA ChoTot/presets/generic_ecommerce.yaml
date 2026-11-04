@@ -1,0 +1,40 @@
+# Mẫu tổng quát cho mọi trang thương mại điện tử / rao vặt / tin tức.
+# Chỉ cần sửa start_urls + follow + selector. Không có `fields` -> tự trích xuất (JSON-LD, OpenGraph, giá...).
+name: generic_shop
+start_urls:
+  - https://books.toscrape.com/
+
+fetch:
+  mode: auto
+
+crawl:
+  concurrency: 8
+  autothrottle: true
+  robots_txt: true
+  max_pages: 200
+  dev_cache: false     # true = lưu cache response, chỉnh selector mà không phải tải lại
+
+pagination:
+  next_css: "li.next a::attr(href)"
+
+follow:
+  - allow: "/catalogue/[^/]+_\\d+/index\\.html$"
+    restrict_css: "article.product_pod"
+
+items:
+  - name: product
+    match: "/catalogue/[^/]+_\\d+/index\\.html$"
+    fields:
+      ten: "h1::text"
+      gia: {css: ".product_main .price_color::text", type: number}
+      ton_kho: {css: ".product_main .availability", regex: "(\\d+)", type: int}
+      danh_gia: {css: ".star-rating::attr(class)", regex: "star-rating (\\w+)"}
+      mo_ta: "#product_description + p::text"
+      upc: {xpath: "//th[text()='UPC']/following-sibling::td/text()"}
+      anh: {css: "#product_gallery img::attr(src)", absolute: true}
+      danh_muc: {css: ".breadcrumb li:nth-child(3) a::text"}
+
+output:
+  path: output/books
+  formats: [json, csv, xlsx]
+  dedupe_key: upc

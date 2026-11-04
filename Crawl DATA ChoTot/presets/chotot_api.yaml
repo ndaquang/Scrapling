@@ -1,0 +1,73 @@
+# ChoTot / NhaTot qua API JSON công khai (nhanh & ổn định nhất, không cần trình duyệt)
+# Kiểm tra lại endpoint bằng:  python universal_crawler.py discover "https://www.chotot.com/mua-ban-bat-dong-san" --filter gateway
+#
+# Tham số hay dùng trong URL:
+#   cg         : danh mục  1000=BĐS, 1010=Căn hộ, 1020=Nhà ở, 1040=Đất, 2010=Ô tô, 2020=Xe máy, 5010=Điện thoại
+#   region_v2  : tỉnh/thành 13000=TP.HCM, 12000=Hà Nội  (bỏ đi để lấy toàn quốc)
+#   st         : s,k = cả tin bán & cho thuê ; limit: số tin/trang ; o: offset
+name: chotot_api
+
+pagination:
+  template: "https://gateway.chotot.com/v1/public/ad-listing?cg=1000&region_v2=13000&st=s,k&limit=50&o={offset}"
+  start: 0
+  step: 50            # offset = trang * 50
+  max: 20             # tối đa 20 trang = 1000 tin
+  stop_when_empty: true
+
+fetch:
+  mode: auto          # http trước, bị chặn thì tự chuyển sang trình duyệt ẩn danh
+  impersonate: chrome
+  headers:
+    Accept: application/json
+  proxies: []         # ["http://user:pass@ip:port", ...] -> tự xoay vòng
+
+crawl:
+  concurrency: 4
+  autothrottle: true
+  max_items: 0        # 0 = không giới hạn
+
+items:
+  # 1) Trang danh sách: mỗi phần tử trong "ads" là một tin
+  - name: listing
+    type: json
+    list: ads
+    required: [list_id]
+    fields:
+      list_id: {json: list_id, type: int}
+      ad_id: {json: ad_id, type: int}
+      tieu_de: {json: subject}
+      gia: {json: price, type: number}
+      gia_hien_thi: {json: price_string}
+      dien_tich_m2: {json: size, type: number}
+      so_phong: {json: rooms, type: int}
+      danh_muc: {json: category_name}
+      tinh_thanh: {json: region_name}
+      quan_huyen: {json: area_name}
+      phuong_xa: {json: ward_name}
+      nguoi_dang: {json: account_name}
+      loai_nguoi_dang: {json: company_ad, type: bool}
+      anh_dai_dien: {json: image}
+      ngay_dang: {json: list_time, type: timestamp}
+      link: {json: list_id, format: "https://www.chotot.com/{value}.htm"}
+    # Đi vào chi tiết từng tin để lấy mô tả + toàn bộ thông số
+    follow:
+      url: "https://gateway.chotot.com/v1/public/ad-listing/{list_id}"
+      rule: detail
+      merge: true
+    emit: false        # chỉ xuất item sau khi đã ghép chi tiết
+
+  # 2) Trang chi tiết (chỉ chạy cho request do bước trên tạo ra)
+  - name: detail
+    type: json
+    only_followed: true
+    fields:
+      mo_ta: {json: ad.body}
+      dia_chi: {json: ad.address}
+      tat_ca_anh: {json: "ad.images", all: true}
+      thong_so: {json: "parameters", all: true}
+
+output:
+  path: output/chotot_bds_hcm
+  formats: [json, csv, xlsx]
+  dedupe_key: list_id
+  incremental: true    # chạy lại hằng ngày chỉ lấy tin mới

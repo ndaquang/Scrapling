@@ -1,0 +1,5 @@
+scrapling[fetchers]>=0.5
+pyyaml
+openpyxl
+markdownify
+pytest

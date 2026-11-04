@@ -1,0 +1,5 @@
+output/
+*.live.jsonl
+*.seen.json
+__pycache__/
+.scrapling_cache/

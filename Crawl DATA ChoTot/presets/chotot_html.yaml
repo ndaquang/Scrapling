@@ -1,0 +1,39 @@
+# ChoTot qua giao diện web (dự phòng khi API thay đổi). Website dùng JavaScript nên chạy trình duyệt ẩn danh.
+# Selector trên ChoTot thay đổi thường xuyên: dùng lệnh `similar` để sinh lại selector, và bật adaptive.
+name: chotot_html
+start_urls:
+  - https://www.chotot.com/mua-ban-bat-dong-san-tp-ho-chi-minh
+
+fetch:
+  mode: stealth
+  adaptive: true       # tự tìm lại phần tử khi website đổi class/cấu trúc
+  stealth:
+    network_idle: true
+    solve_cloudflare: true
+    disable_resources: true
+
+crawl:
+  concurrency: 2
+  autothrottle: true
+  max_pages: 30
+
+follow:
+  - allow: "/mua-ban-bat-dong-san-tp-ho-chi-minh\\?page=\\d+$"   # các trang danh sách
+  - allow: "/\\d+\\.htm"                                          # trang chi tiết tin
+
+items:
+  - name: detail
+    match: "/\\d+\\.htm"
+    fields:
+      list_id: {css: "link[rel=canonical]::attr(href)", regex: "/(\\d+)\\.htm", type: int}
+      tieu_de: {css: "h1::text", adaptive: true}
+      gia: {css: "[itemprop=price]::attr(content)", type: number}
+      gia_hien_thi: {xpath: "//*[contains(@class,'price') or contains(@class,'Price')][1]//text()", all: true, join: " "}
+      mo_ta: {css: "[itemprop=description]", default: ""}
+      anh: {css: "img[src*='cdn.chotot.com']::attr(src)", all: true}
+    auto_extract: true    # thêm JSON-LD, OpenGraph… nếu có
+
+output:
+  path: output/chotot_html
+  formats: [json, csv]
+  dedupe_key: list_id
